@@ -1,0 +1,179 @@
+---
+title: "Demo System"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+runtime: shiny
+---
+
+```{r global, include=FALSE}
+API_KEY = "tqxxxl" # use your key
+SECRET_KEY = "Aaxxxtt" # use your key
+library(rjson)
+library(httr) 
+get_access_token = function(API_KEY,SECRET_KEY){
+  url = "https://aip.baidubce.com/oauth/2.0/token"
+  params = list(grant_type = "client_credentials", client_id = API_KEY, client_secret = SECRET_KEY)
+  temp = POST(url, body=params)
+  return(content(temp)$access_token)
+}
+# load data in 'global' chunk so it can be shared
+# by all users of the dashboard
+ask_qf = function(payload, API_KEY, SECRET_KEY){
+  url = "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions_pro?access_token="
+  url = paste(url, get_access_token(API_KEY, SECRET_KEY), sep = '')
+  headers = c('Content-Type' = 'application/json')
+  response = POST(url, headers=headers, body=payload)
+  return(response)
+}
+#ask_qf = function(payload, API_KEY, SECRET_KEY){
+#
+#  return(list(function_call = 'demo1'))
+#}
+# suppose you are a master for R
+initial_prompt = list(role = 'user', 
+                      content = "你是一个R语言大师，会使用任何R函数和工具。" )
+
+property_eval = list(numbers = list(type = 'string',
+                                    description = '能用python中的eval函数计算的字符串算式',
+                                    items = list(type = 'number')))
+function_eval = list(name = 'eval',
+                     description = "计算器，计算以字符数书写的算式的计算结果",
+                     parameters = list(type = 'object',
+                                       properties = property_eval))
+all_messages = list(initial_prompt)
+
+n_round = '0'
+status = '0'
+new_in = '0'
+temp_receive = '0'
+writeLines(toJSON(list(all_messages = all_messages,
+                       n_round = n_round,
+                       status = status,
+                       new_in = new_in,
+                       temp_receive = temp_receive)),'cache.txt')
+
+file_data <- reactiveFileReader(1000, session = NULL, filePath = "cache.txt", readLines)
+```
+
+Column {.sidebar}
+--------------------------------------------------
+
+```{r}
+selectInput(
+  "clear", label = "清空对话/clear",
+  choices = c(0,1), selected = 0
+)
+
+selectInput(
+  "if_save", label = "保存当前结果/save",
+  choices = c(0,1), selected = 0
+)
+
+sliderInput(
+  "temperature", label = "温度（未设置）:",
+  min = 0, max = 100, value = 10, step = 1
+) # example of other setting
+
+
+
+textInput("cur_in", "输入", "")
+
+
+actionButton("send", "发送/send", style = "color: white; background-color: blue;")
+
+```
+
+可以添加任何想要的设置。
+
+Add any wanted settings here.
+
+Column
+--------------------------------------------------
+
+### 对话框/conversation
+
+```{r conversation}
+observeEvent(input$send, { 
+  env = fromJSON(readLines('cache.txt'))
+  env$status = 'chat'
+  if(env$n_round == '0'){
+    env$all_messages[[1]]$content = paste(all_messages[[1]]$content, input$cur_in, sep='')
+  } else{
+    env$new_in = list(role = 'user', content = input$cur_in)
+    env$all_messages = append(env$all_messages, list(env$new_in))
+  }
+
+  payload = list(messages = env$all_messages, functions = list(function_eval))
+  print(payload)
+  print(toJSON(payload))
+  env$temp_receive = content(ask_qf(toJSON(payload), API_KEY, SECRET_KEY))
+  if(is.null(env$temp_receive$function_call)){
+    temp1 = list(role = 'assistant', content = env$temp_receive$result)
+    env$all_messages = append(env$all_messages, list(temp1))
+  } else{
+    env$status = 'function_call'
+  }
+  
+  env$n_round = '1'
+  writeLines(toJSON(env), 'cache.txt')
+})  
+    
+
+renderPrint({
+  file_data()
+  env = fromJSON(readLines('cache.txt'))
+  #print(env)
+  if(input$clear == 1){
+    env$n_round = '0'
+    env$all_messages = list(initial_prompt)
+    updateSelectInput(session, "clear", selected = 0)
+    env$status = 'cleared'
+  }
+  if(env$status == 'cleared'){
+    print('已清空 / cleared')
+  }
+  print(env$all_messages)
+  
+  writeLines(toJSON(env), 'cache.txt')
+})
+
+
+
+```
+
+                   
+Column
+--------------------------------------------------
+
+### function_call thoughts
+
+```{r thought, echo = FALSE}
+renderPrint({
+  file_data()
+  env = fromJSON(readLines('cache.txt'))
+  if(env$status == 'function_call'){
+    print(env$temp_receive$function_call)  
+  }
+})
+```
+
+### function_call output
+
+```{r function_call, echo = FALSE}
+renderPrint({
+  file_data()
+  env = fromJSON(readLines('cache.txt'))
+  if(env$status == 'function_call'){
+    temp_input = env$temp_receive$function_call$arguments
+    temp_input = gsub('×','*',fromJSON(temp_input))
+    output = eval(parse(text = temp_input[[1]]))
+    
+    print(output)
+    if(input$if_save == 1){
+      write.csv(output, 'output.csv')
+    }
+  }
+})
+
+```
